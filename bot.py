@@ -52,7 +52,7 @@ def analyze_market():
 
     system_blocks = core.get_system_prompt_blocks(SPOT_SYMBOL, DEPOSIT, RISK_PERCENT, BOOKS_CONTEXT)
     user_prompt = (
-        "Данные последних свечей (интервал 15м) в формате JSON:\n"
+        "Данные 60 последних закрытых свечей (интервал 15м, история за 15 часов) в формате JSON:\n"
         f"{json.dumps(candles, indent=2, ensure_ascii=False)}"
     )
 
