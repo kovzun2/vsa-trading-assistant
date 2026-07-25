@@ -487,7 +487,20 @@ def get_journal_stats():
         }
 
 
-def format_usage_summary(usage):
+def estimate_cost(model, prompt_tokens, completion_tokens, cached_tokens=0):
+    """Рассчитывает ориентировочную стоимость вызова, если API вернул 0."""
+    model_lower = str(model).lower()
+    if "claude-3.5-sonnet" in model_lower or "claude-3-5-sonnet" in model_lower:
+        p_cost = max(0, prompt_tokens - cached_tokens) * (3.00 / 1_000_000) + cached_tokens * (0.30 / 1_000_000)
+        c_cost = completion_tokens * (15.00 / 1_000_000)
+        return p_cost + c_cost
+    elif "gemini-1.5-pro" in model_lower:
+        return prompt_tokens * (1.25 / 1_000_000) + completion_tokens * (5.00 / 1_000_000)
+    else:
+        return prompt_tokens * (0.50 / 1_000_000) + completion_tokens * (1.50 / 1_000_000)
+
+
+def format_usage_summary(usage, model=""):
     """Форматирует информацию об использованных токенах и стоимости для вывода."""
     if not usage:
         return ""
@@ -501,31 +514,41 @@ def format_usage_summary(usage):
         cached_tokens = usage.get("native_tokens_cached", usage.get("cached_tokens", 0))
         
     cost = usage.get("total_cost", 0.0)
+    if not cost or cost == 0.0:
+        cost = estimate_cost(model, prompt_tokens, completion_tokens, cached_tokens)
     
     parts = [f"🔤 Токены: {total_tokens:,} (Промпт: {prompt_tokens:,}, Ответ: {completion_tokens:,})"]
     if cached_tokens > 0:
         parts.append(f"⚡ Скэшировано: {cached_tokens:,}")
-    if cost > 0:
-        parts.append(f"💵 Стоимость: ${cost:.6f}")
+    parts.append(f"💵 Стоимость: ${cost:.6f}")
     return " | ".join(parts)
 
 
 def get_db_stats():
-    """Возвращает суммарную статистику вызовов, токенов и расходов из БД."""
+    """Возвращает суммарную статистику вызовов, токенов и расходов из БД с дорасчетом стоимости."""
     try:
         init_db()
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
+            cursor.execute("SELECT id, model, prompt_tokens, completion_tokens, cached_tokens FROM signals WHERE cost IS NULL OR cost = 0.0")
+            rows_to_update = cursor.fetchall()
+            for r in rows_to_update:
+                r_id, r_model, r_prompt, r_comp, r_cached = r
+                est = estimate_cost(r_model or "z-ai/glm-5.2", r_prompt or 0, r_comp or 0, r_cached or 0)
+                conn.execute("UPDATE signals SET cost = ? WHERE id = ?", (est, r_id))
+            conn.commit()
+
             cursor.execute("SELECT COUNT(*), SUM(prompt_tokens), SUM(completion_tokens), SUM(cost) FROM signals")
             row = cursor.fetchone()
             prompt = row[1] or 0
             completion = row[2] or 0
+            cost = row[3] or 0.0
             return {
                 "total_calls": row[0] or 0,
                 "prompt_tokens": prompt,
                 "completion_tokens": completion,
                 "total_tokens": prompt + completion,
-                "total_cost": row[3] or 0.0
+                "total_cost": cost
             }
     except Exception as e:
         print(f"Ошибка получения статистики из БД: {e}")
@@ -540,7 +563,15 @@ def log_signal(model, candles, usage, raw_reply, signal):
         
         prompt_tokens = usage.get("prompt_tokens", 0) if usage else 0
         completion_tokens = usage.get("completion_tokens", 0) if usage else 0
+        
+        details = usage.get("prompt_tokens_details", {}) if usage else {}
+        cached_tokens = details.get("cached_tokens", 0) if isinstance(details, dict) else 0
+        if not cached_tokens and usage:
+            cached_tokens = usage.get("native_tokens_cached", usage.get("cached_tokens", 0))
+
         cost = usage.get("total_cost", 0.0) if usage else 0.0
+        if not cost or cost == 0.0:
+            cost = estimate_cost(model, prompt_tokens, completion_tokens, cached_tokens)
         
         direction = signal.get("direction", "") if signal else ""
         entry = signal.get("entry") if signal else None

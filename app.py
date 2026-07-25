@@ -93,8 +93,7 @@ with st.sidebar:
     st.markdown(f"- **Всего токенов:** {stats['total_tokens']:,}")
     st.markdown(f"  - Промпт: {stats['prompt_tokens']:,}")
     st.markdown(f"  - Ответы: {stats['completion_tokens']:,}")
-    if stats['total_cost'] > 0:
-        st.markdown(f"- **Общие затраты:** `${stats['total_cost']:.6f}`")
+    st.markdown(f"- **Общие затраты:** `${stats['total_cost']:.6f}`")
 
 # --- Инициализация истории чата ---
 if "messages" not in st.session_state:
