@@ -324,6 +324,94 @@ def call_llm(messages, api_key, model, retries=2, timeout=60):
     return False, f"Ошибка API OpenRouter: {last_err}", {}
 
 
+def create_vsa_chart(candles, signal=None, basis=0.0):
+    """Создаёт интерактивный Plotly свечной график с VSA-объёмами и уровнями ордера."""
+    if not candles:
+        return None
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    df = pd.DataFrame(candles)
+    
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.04,
+        subplot_titles=("График 6E=F (CME 15m) & VSA Уровни", "VSA Объём и Относительный объем (rel_vol)"),
+        row_width=[0.25, 0.75]
+    )
+    
+    # 1. Свечи (Candlestick)
+    fig.add_trace(
+        go.Candlestick(
+            x=df['time'],
+            open=df['open'],
+            high=df['high'],
+            low=df['low'],
+            close=df['close'],
+            name="6E=F Futures",
+            increasing_line_color="#26a69a",
+            decreasing_line_color="#ef5350"
+        ),
+        row=1, col=1
+    )
+    
+    # Подсветка объёма: Ultra High (rel_vol >= 1.5) - пурпурный, Low Volume (<= 0.4) - желтый, Normal - голубой
+    colors = []
+    for rv in df['rel_volume']:
+        if rv >= 1.5:
+            colors.append('#ab47bc')
+        elif rv <= 0.4:
+            colors.append('#ffee58')
+        else:
+            colors.append('#42a5f5')
+            
+    fig.add_trace(
+        go.Bar(
+            x=df['time'],
+            y=df['volume'],
+            name="Volume",
+            marker_color=colors,
+            opacity=0.85
+        ),
+        row=2, col=1
+    )
+    
+    # 2. Уровни сигнала (Entry, Stop, Take)
+    if signal and isinstance(signal, dict):
+        direction = str(signal.get("direction", "")).lower()
+        entry = signal.get("entry")
+        stop = signal.get("stop")
+        take = signal.get("take")
+        
+        if direction in ("long", "short") and entry and stop:
+            fig.add_hline(
+                y=entry, line_dash="dash", line_color="#29b6f6", line_width=2,
+                annotation_text=f"ENTRY ({direction.upper()}): {entry}", annotation_position="top right",
+                row=1, col=1
+            )
+            fig.add_hline(
+                y=stop, line_dash="dash", line_color="#ef5350", line_width=2,
+                annotation_text=f"STOP: {stop}", annotation_position="bottom right",
+                row=1, col=1
+            )
+            if take:
+                fig.add_hline(
+                    y=take, line_dash="dash", line_color="#66bb6a", line_width=2,
+                    annotation_text=f"TAKE: {take}", annotation_position="top right",
+                    row=1, col=1
+                )
+
+    fig.update_layout(
+        template="plotly_dark",
+        height=520,
+        margin=dict(l=10, r=10, t=30, b=10),
+        xaxis_rangeslider_visible=False,
+        showlegend=False
+    )
+    return fig
+
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "signals.sqlite")
 
 def init_db():
@@ -342,9 +430,57 @@ def init_db():
                 direction TEXT,
                 entry REAL,
                 stop REAL,
-                take REAL
+                take REAL,
+                outcome TEXT DEFAULT 'pending'
             )
         ''')
+        try:
+            conn.execute("ALTER TABLE signals ADD COLUMN outcome TEXT DEFAULT 'pending'")
+        except sqlite3.OperationalError:
+            pass
+
+
+def get_all_signals():
+    """Возвращает все сигналы из БД для торгового журнала."""
+    init_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, timestamp, model, direction, entry, stop, take, cost, outcome FROM signals ORDER BY id DESC")
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def update_signal_outcome(signal_id, outcome):
+    """Обновляет статус исхода сделки (hit_tp, hit_sl, canceled, pending)."""
+    init_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("UPDATE signals SET outcome = ? WHERE id = ?", (outcome, signal_id))
+
+
+def get_journal_stats():
+    """Рассчитывает статистику Winrate и исходов из БД."""
+    init_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT outcome, COUNT(*) FROM signals WHERE direction IN ('long', 'short') GROUP BY outcome")
+        rows = dict(cursor.fetchall())
+        
+        tp = rows.get('hit_tp', 0)
+        sl = rows.get('hit_sl', 0)
+        canceled = rows.get('canceled', 0)
+        pending = rows.get('pending', 0)
+        total_closed = tp + sl
+        winrate = round((tp / total_closed) * 100, 1) if total_closed > 0 else 0.0
+        
+        return {
+            "hit_tp": tp,
+            "hit_sl": sl,
+            "canceled": canceled,
+            "pending": pending,
+            "total_closed": total_closed,
+            "winrate": winrate
+        }
+
 
 def format_usage_summary(usage):
     """Форматирует информацию об использованных токенах и стоимости для вывода."""

@@ -1,6 +1,7 @@
 import os
 import json
 from datetime import datetime
+import pandas as pd
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -26,10 +27,10 @@ def build_api_messages(messages, spot_symbol, deposit, risk, books_context):
     for i, m in enumerate(recent):
         if m.get("role") == "system":
             continue
-        # Для последнего сообщения используем полный content, для предыдущих - очищенную отображаемую версию
         content = m["content"] if i == len(recent) - 1 else m.get("display", m["content"])
         api_messages.append({"role": m["role"], "content": content})
     return api_messages
+
 
 # --- Боковая панель (Настройки) ---
 with st.sidebar:
@@ -65,99 +66,176 @@ if "messages" not in st.session_state:
     st.session_state.messages = [
         {
             "role": "assistant",
-            "content": "Привет! Я твой торговый ассистент по VSA. Нажми 'Анализ рынка' справа или задай вопрос.",
-            "display": "Привет! Я твой торговый ассистент по VSA. Нажми 'Анализ рынка' справа или задай вопрос.",
+            "content": "Привет! Я твой торговый ассистент по VSA. Нажми 'Сделать анализ последних данных' справа или задай вопрос.",
+            "display": "Привет! Я твой торговый ассистент по VSA. Нажми 'Сделать анализ последних данных' справа или задай вопрос.",
         }
     ]
 
-# --- ОСНОВНОЙ ИНТЕРФЕЙС ---
+# --- ОСНОВНОЙ ИНТЕРФЕЙС С ВКЛАДКАМИ ---
 st.title("📈 VSA Trading Assistant")
 
-col1, col2 = st.columns([2, 1])
+tab1, tab2 = st.tabs(["📈 Ассистент & График", "📊 Журнал сделок & Winrate"])
 
-with col2:
-    st.subheader("📊 Анализ графика")
-    is_weekend = datetime.today().weekday() >= 5
-    if is_weekend:
-        st.warning("⚠️ Внимание: Рынок закрыт (выходные). Анализируются котировки закрытия пятницы. Сигналы перед выходными носят ознакомительный характер, реальный вход не рекомендуется из-за риска гепа при открытии в воскресенье.")
-    if st.button("🔄 Сделать анализ последних данных", use_container_width=True):
-        if not api_key:
-            st.error("Введите API ключ в настройках (слева).")
-        else:
-            with st.spinner("Загрузка котировок с Yahoo Finance (цены + объемы)..."):
-                candles, basis, is_stale = core.get_market_data(spot_symbol, fut_symbol, tz_offset)
-            if candles:
-                st.session_state.basis = basis
-                st.session_state.last_close = candles[-1]['close']
-                st.success("Данные успешно получены!")
-                st.write(f"**Последняя закрытая свеча:** {candles[-1]['time']}")
-                st.json(candles[-1])
+with tab1:
+    col1, col2 = st.columns([2, 1])
 
-                user_msg = (
-                    f"Проанализируй график. Вот данные 60 последних закрытых свечей (15м, история за 15 часов):\n"
-                    f"{json.dumps(candles, indent=2, ensure_ascii=False)}"
-                )
-                display_msg = "📉 Пожалуйста, проанализируй последние доступные рыночные данные."
-                st.session_state.messages.append({"role": "user", "content": user_msg, "display": display_msg})
+    with col2:
+        st.subheader("📊 Управление анализом")
+        is_weekend = datetime.today().weekday() >= 5
+        if is_weekend:
+            st.warning("⚠️ Внимание: Рынок закрыт (выходные). Анализируются котировки закрытия пятницы. Сигналы перед выходными носят ознакомительный характер, реальный вход не рекомендуется из-за риска гепа при открытии в воскресенье.")
+            
+        if st.button("🔄 Сделать анализ последних данных", use_container_width=True):
+            if not api_key:
+                st.error("Введите API ключ в настройках (слева).")
+            else:
+                with st.spinner("Загрузка котировок с Yahoo Finance (цены + объемы)..."):
+                    candles, basis, is_stale = core.get_market_data(spot_symbol, fut_symbol, tz_offset)
+                if candles:
+                    st.session_state.candles = candles
+                    st.session_state.basis = basis
+                    st.session_state.last_close = candles[-1]['close']
+                    st.success("Данные успешно получены!")
+                    st.write(f"**Последняя закрытая свеча:** {candles[-1]['time']}")
+
+                    user_msg = (
+                        f"Проанализируй график. Вот данные 60 последних закрытых свечей (15м, история за 15 часов):\n"
+                        f"{json.dumps(candles, indent=2, ensure_ascii=False)}"
+                    )
+                    display_msg = "📉 Пожалуйста, проанализируй последние доступные рыночные данные."
+                    st.session_state.messages.append({"role": "user", "content": user_msg, "display": display_msg})
+
+                    api_messages = build_api_messages(st.session_state.messages, spot_symbol, deposit, risk, BOOKS_CONTEXT)
+
+                    with st.spinner("Бот проводит анализ..."):
+                        ok, raw_reply, usage = core.call_llm(api_messages, api_key, model)
+
+                    if ok:
+                        basis = st.session_state.get("basis", 0.0)
+                        last_close = st.session_state.get("last_close", None)
+                        display_reply, signal = core.format_response(raw_reply, deposit, risk, basis, last_close)
+                        st.session_state.last_signal = signal
+                        
+                        core.log_signal(model, candles, usage, raw_reply, signal)
+                        
+                        st.session_state.messages.append(
+                            {"role": "assistant", "content": raw_reply, "display": display_reply, "usage": usage}
+                        )
+                        st.rerun()
+                    else:
+                        st.error(f"Ошибка вызова LLM: {raw_reply}")
+                else:
+                    st.error("Не удалось получить данные с Yahoo Finance.")
+
+    with col1:
+        # Автоматическая загрузка котировок для графика при открытии
+        if "candles" not in st.session_state:
+            with st.spinner("Загрузка графика..."):
+                candles, basis, _ = core.get_market_data(spot_symbol, fut_symbol, tz_offset)
+                if candles:
+                    st.session_state.candles = candles
+                    st.session_state.basis = basis
+
+        if st.session_state.get("candles"):
+            fig = core.create_vsa_chart(
+                st.session_state.candles,
+                signal=st.session_state.get("last_signal"),
+                basis=st.session_state.get("basis", 0.0)
+            )
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("💬 Чат с ботом")
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg.get("display", msg["content"]))
+                if msg.get("usage"):
+                    caption = core.format_usage_summary(msg["usage"])
+                    if caption:
+                        st.caption(caption)
+
+        if prompt := st.chat_input("Напишите вопрос боту (например: 'Где бы ты поставил стоп?'):"):
+            if not api_key:
+                st.error("Введите API ключ в настройках (слева).")
+            else:
+                st.session_state.messages.append({"role": "user", "content": prompt, "display": prompt})
+                with st.chat_message("user"):
+                    st.markdown(prompt)
 
                 api_messages = build_api_messages(st.session_state.messages, spot_symbol, deposit, risk, BOOKS_CONTEXT)
 
-                with st.spinner("Бот проводит анализ..."):
-                    ok, raw_reply, usage = core.call_llm(api_messages, api_key, model)
-
-                if ok:
-                    basis = st.session_state.get("basis", 0.0)
-                    last_close = st.session_state.get("last_close", None)
-                    display_reply, signal = core.format_response(raw_reply, deposit, risk, basis, last_close)
+                with st.chat_message("assistant"):
+                    with st.spinner("Бот печатает..."):
+                        ok, raw_reply, usage = core.call_llm(api_messages, api_key, model)
                     
-                    core.log_signal(model, candles, usage, raw_reply, signal)
-                    
-                    st.session_state.messages.append(
-                        {"role": "assistant", "content": raw_reply, "display": display_reply, "usage": usage}
-                    )
-                    st.rerun()
-                else:
-                    st.error(f"Ошибка вызова LLM: {raw_reply}")
-            else:
-                st.error("Не удалось получить данные с Yahoo Finance.")
+                    if ok:
+                        basis = st.session_state.get("basis", 0.0)
+                        last_close = st.session_state.get("last_close", None)
+                        display_reply, signal = core.format_response(raw_reply, deposit, risk, basis, last_close)
+                        if signal:
+                            st.session_state.last_signal = signal
+                        
+                        core.log_signal(model, [], usage, raw_reply, signal)
+                        
+                        st.markdown(display_reply)
+                        caption = core.format_usage_summary(usage)
+                        if caption:
+                            st.caption(caption)
+                        st.session_state.messages.append(
+                            {"role": "assistant", "content": raw_reply, "display": display_reply, "usage": usage}
+                        )
+                    else:
+                        st.error(f"Ошибка вызова LLM: {raw_reply}")
 
-with col1:
-    st.subheader("💬 Чат с ботом")
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg.get("display", msg["content"]))
-            if msg.get("usage"):
-                caption = core.format_usage_summary(msg["usage"])
-                if caption:
-                    st.caption(caption)
+with tab2:
+    st.subheader("📊 Торговый журнал & Статистика сигналов")
+    
+    j_stats = core.get_journal_stats()
+    
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Winrate", f"{j_stats['winrate']}%")
+    m2.metric("Успешных (TP)", j_stats['hit_tp'])
+    m3.metric("Убыточных (SL)", j_stats['hit_sl'])
+    m4.metric("В процессе", j_stats['pending'])
+    m5.metric("Всего закрыто", j_stats['total_closed'])
+    
+    st.divider()
+    
+    signals_list = core.get_all_signals()
+    if signals_list:
+        df_signals = pd.DataFrame(signals_list)
+        
+        st.subheader("📋 История сгенерированных сигналов")
+        
+        # Форма для быстрого изменения статуса сделки
+        col_select, col_outcome, col_btn = st.columns([2, 2, 1])
+        with col_select:
+            selected_id = st.selectbox("Выберите ID сигнала для отметки результата:", df_signals['id'].tolist())
+        with col_outcome:
+            new_outcome = st.selectbox("Результат сделки:", ["hit_tp", "hit_sl", "canceled", "pending"])
+        with col_btn:
+            st.write("") # Spacer
+            st.write("")
+            if st.button("Сохранить статус", use_container_width=True):
+                core.update_signal_outcome(selected_id, new_outcome)
+                st.success(f"Сигнал #{selected_id} обновлен -> {new_outcome}")
+                st.rerun()
 
-    if prompt := st.chat_input("Напишите вопрос боту (например: 'Где бы ты поставил стоп?'):"):
-        if not api_key:
-            st.error("Введите API ключ в настройках (слева).")
-        else:
-            st.session_state.messages.append({"role": "user", "content": prompt, "display": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            api_messages = build_api_messages(st.session_state.messages, spot_symbol, deposit, risk, BOOKS_CONTEXT)
-
-            with st.chat_message("assistant"):
-                with st.spinner("Бот печатает..."):
-                    ok, raw_reply, usage = core.call_llm(api_messages, api_key, model)
-                
-                if ok:
-                    basis = st.session_state.get("basis", 0.0)
-                    last_close = st.session_state.get("last_close", None)
-                    display_reply, signal = core.format_response(raw_reply, deposit, risk, basis, last_close)
-                    
-                    core.log_signal(model, [], usage, raw_reply, signal)
-                    
-                    st.markdown(display_reply)
-                    caption = core.format_usage_summary(usage)
-                    if caption:
-                        st.caption(caption)
-                    st.session_state.messages.append(
-                        {"role": "assistant", "content": raw_reply, "display": display_reply, "usage": usage}
-                    )
-                else:
-                    st.error(f"Ошибка вызова LLM: {raw_reply}")
+        st.dataframe(
+            df_signals,
+            column_config={
+                "id": "ID",
+                "timestamp": "Время (UTC)",
+                "model": "Модель LLM",
+                "direction": "Сигнал",
+                "entry": "Вход (Fut)",
+                "stop": "Стоп (Fut)",
+                "take": "Тейк (Fut)",
+                "cost": "Стоимость ($)",
+                "outcome": "Исход"
+            },
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("В базе данных пока нет записанных сигналов.")
