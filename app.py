@@ -5,7 +5,9 @@ from datetime import datetime
 import streamlit as st
 from dotenv import load_dotenv
 
+import importlib
 import core
+importlib.reload(core)
 
 load_dotenv()
 
