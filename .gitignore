@@ -1,0 +1,15 @@
+# Environment & Credentials
+.env
+
+# Python & Virtual environment
+.venv/
+__pycache__/
+*.pyc
+
+# Database & Cache
+*.sqlite
+.pytest_cache/
+*.pkl
+
+# PDF sources
+*.pdf
