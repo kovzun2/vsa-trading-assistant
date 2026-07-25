@@ -555,6 +555,31 @@ def get_db_stats():
         return {"total_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "total_cost": 0.0}
 
 
+def get_mt5_account_info():
+    """Подключается к локальному терминалу MetaTrader 5 и забирает баланс счета."""
+    try:
+        import MetaTrader5 as mt5
+        if not mt5.initialize():
+            return False, "Терминал MetaTrader 5 не запущен или недоступен.", None
+        acc = mt5.account_info()
+        if acc is None:
+            mt5.shutdown()
+            return False, "Не удалось получить информацию о счете MT5.", None
+        info = {
+            "login": acc.login,
+            "server": acc.server,
+            "name": acc.name,
+            "balance": acc.balance,
+            "equity": acc.equity,
+            "currency": acc.currency,
+            "leverage": acc.leverage
+        }
+        mt5.shutdown()
+        return True, f"Успешно! Аккаунт #{acc.login} ({acc.server})", info
+    except Exception as e:
+        return False, f"Ошибка подключения MT5: {e}", None
+
+
 def log_signal(model, candles, usage, raw_reply, signal):
     try:
         init_db()

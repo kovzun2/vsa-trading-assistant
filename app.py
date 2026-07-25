@@ -79,11 +79,28 @@ with st.sidebar:
     ])
 
     st.divider()
-    st.subheader("Торговля")
+    st.subheader("Торговля & MT5")
+    
+    if st.button("🔗 Синхронизировать с MT5", use_container_width=True):
+        ok, msg, mt5_info = core.get_mt5_account_info()
+        if ok and mt5_info:
+            st.session_state.mt5_info = mt5_info
+            st.session_state.deposit_synced = mt5_info["balance"]
+            st.success(f"Подключено: #{mt5_info['login']} ({mt5_info['server']})")
+        else:
+            st.error(msg)
+            
+    mt5_info = st.session_state.get("mt5_info")
+    if mt5_info:
+        st.info(f"🟢 **MT5:** #{mt5_info['login']} ({mt5_info['server']})\nБаланс: **${mt5_info['balance']:.2f} {mt5_info['currency']}** | Плечо: 1:{mt5_info['leverage']}")
+        default_dep = float(mt5_info["balance"])
+    else:
+        default_dep = float(st.session_state.get("deposit_synced", core.DEFAULT_DEPOSIT))
+
     spot_symbol = st.text_input("Тикер цен (MT5/Спот)", value=core.DEFAULT_SPOT_SYMBOL)
     fut_symbol = st.text_input("Тикер объемов (Фьючерс)", value=core.DEFAULT_FUT_SYMBOL)
     tz_offset = st.number_input("Часовой пояс MT5 (от UTC)", min_value=-12, max_value=12, value=core.DEFAULT_TZ_OFFSET)
-    deposit = st.number_input("Депозит (USD)", value=core.DEFAULT_DEPOSIT)
+    deposit = st.number_input("Депозит (USD)", value=default_dep)
     risk = st.number_input("Риск на сделку (%)", value=core.DEFAULT_RISK_PERCENT, step=0.1)
 
     st.divider()
