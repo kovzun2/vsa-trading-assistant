@@ -346,6 +346,51 @@ def init_db():
             )
         ''')
 
+def format_usage_summary(usage):
+    """Форматирует информацию об использованных токенах и стоимости для вывода."""
+    if not usage:
+        return ""
+    prompt_tokens = usage.get("prompt_tokens", 0)
+    completion_tokens = usage.get("completion_tokens", 0)
+    total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
+    
+    details = usage.get("prompt_tokens_details", {})
+    cached_tokens = details.get("cached_tokens", 0) if isinstance(details, dict) else 0
+    if not cached_tokens:
+        cached_tokens = usage.get("native_tokens_cached", usage.get("cached_tokens", 0))
+        
+    cost = usage.get("total_cost", 0.0)
+    
+    parts = [f"🔤 Токены: {total_tokens:,} (Промпт: {prompt_tokens:,}, Ответ: {completion_tokens:,})"]
+    if cached_tokens > 0:
+        parts.append(f"⚡ Скэшировано: {cached_tokens:,}")
+    if cost > 0:
+        parts.append(f"💵 Стоимость: ${cost:.6f}")
+    return " | ".join(parts)
+
+
+def get_db_stats():
+    """Возвращает суммарную статистику вызовов, токенов и расходов из БД."""
+    try:
+        init_db()
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*), SUM(prompt_tokens), SUM(completion_tokens), SUM(cost) FROM signals")
+            row = cursor.fetchone()
+            prompt = row[1] or 0
+            completion = row[2] or 0
+            return {
+                "total_calls": row[0] or 0,
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_tokens": prompt + completion,
+                "total_cost": row[3] or 0.0
+            }
+    except Exception as e:
+        print(f"Ошибка получения статистики из БД: {e}")
+        return {"total_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "total_cost": 0.0}
+
+
 def log_signal(model, candles, usage, raw_reply, signal):
     try:
         init_db()

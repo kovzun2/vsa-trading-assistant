@@ -50,6 +50,16 @@ with st.sidebar:
     deposit = st.number_input("Депозит (USD)", value=core.DEFAULT_DEPOSIT)
     risk = st.number_input("Риск на сделку (%)", value=core.DEFAULT_RISK_PERCENT, step=0.1)
 
+    st.divider()
+    st.subheader("📊 Расход токенов (БД)")
+    stats = core.get_db_stats()
+    st.markdown(f"- **Запросов всего:** {stats['total_calls']}")
+    st.markdown(f"- **Всего токенов:** {stats['total_tokens']:,}")
+    st.markdown(f"  - Промпт: {stats['prompt_tokens']:,}")
+    st.markdown(f"  - Ответы: {stats['completion_tokens']:,}")
+    if stats['total_cost'] > 0:
+        st.markdown(f"- **Общие затраты:** `${stats['total_cost']:.6f}`")
+
 # --- Инициализация истории чата ---
 if "messages" not in st.session_state:
     st.session_state.messages = [
@@ -103,7 +113,7 @@ with col2:
                     core.log_signal(model, candles, usage, raw_reply, signal)
                     
                     st.session_state.messages.append(
-                        {"role": "assistant", "content": raw_reply, "display": display_reply}
+                        {"role": "assistant", "content": raw_reply, "display": display_reply, "usage": usage}
                     )
                     st.rerun()
                 else:
@@ -116,6 +126,10 @@ with col1:
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg.get("display", msg["content"]))
+            if msg.get("usage"):
+                caption = core.format_usage_summary(msg["usage"])
+                if caption:
+                    st.caption(caption)
 
     if prompt := st.chat_input("Напишите вопрос боту (например: 'Где бы ты поставил стоп?'):"):
         if not api_key:
@@ -139,8 +153,11 @@ with col1:
                     core.log_signal(model, [], usage, raw_reply, signal)
                     
                     st.markdown(display_reply)
+                    caption = core.format_usage_summary(usage)
+                    if caption:
+                        st.caption(caption)
                     st.session_state.messages.append(
-                        {"role": "assistant", "content": raw_reply, "display": display_reply}
+                        {"role": "assistant", "content": raw_reply, "display": display_reply, "usage": usage}
                     )
                 else:
                     st.error(f"Ошибка вызова LLM: {raw_reply}")
