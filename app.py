@@ -24,17 +24,16 @@ BOOKS_CONTEXT = core.load_books()
 
 
 def build_api_messages(messages, spot_symbol, deposit, risk, books_context):
-    """Формирует список сообщений для API, сжимая старые сообщения и вкладывая полный JSON только в последнее."""
+    """Формирует список сообщений для API, сохраняя полный контекст свечей в истории."""
     api_messages = [{
         "role": "system",
         "content": core.get_system_prompt_blocks(spot_symbol, deposit, risk, books_context),
     }]
     recent = messages[-12:]
-    for i, m in enumerate(recent):
+    for m in recent:
         if m.get("role") == "system":
             continue
-        content = m["content"] if i == len(recent) - 1 else m.get("display", m["content"])
-        api_messages.append({"role": m["role"], "content": content})
+        api_messages.append({"role": m["role"], "content": m["content"]})
     return api_messages
 
 
