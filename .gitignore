@@ -10,6 +10,8 @@ __pycache__/
 *.sqlite
 .pytest_cache/
 *.pkl
+# ...кроме бинарной фикстуры, нужной для воспроизводимости тестов
+!tests/fixture_15m.pkl
 
 # PDF sources
 *.pdf
