@@ -201,6 +201,13 @@ def extract_signal(text):
         return None
 
 
+def round_to_tick(price, tick_size=0.00005):
+    """Округляет уровень к шагу цены (тик-сайзу) фьючерса 6E."""
+    if price is None:
+        return None
+    return round(round(float(price) / tick_size) * tick_size, 5)
+
+
 def build_position_block(deposit, risk_percent, signal, basis, last_close, contract_size=DEFAULT_CONTRACT_SIZE):
     """Текстовый блок с расчётом позиции на основе сигнала LLM."""
     if not signal:
@@ -208,14 +215,12 @@ def build_position_block(deposit, risk_percent, signal, basis, last_close, contr
     direction = str(signal.get("direction", "")).lower()
     if direction in ("", "none", "flat", "wait"):
         return "\n\n---\n**🤖 Сигнал:** Вне рынка (None)"
-        
-    entry = signal.get("entry")
-    stop = signal.get("stop")
-    take = signal.get("take")
-    
+
+    entry = round_to_tick(signal.get("entry"))
+    stop = round_to_tick(signal.get("stop"))
+    take = round_to_tick(signal.get("take"))
+
     calc = calculate_position_size(deposit, risk_percent, entry, stop, last_close, contract_size)
-    if calc is None:
-         return ""
     if "error" in calc:
          return f"\n\n---\n**📐 Расчёт позиции:**\n❌ {calc['error']}"
          
@@ -443,6 +448,11 @@ def init_db():
             conn.execute("ALTER TABLE signals ADD COLUMN outcome TEXT DEFAULT 'pending'")
         except sqlite3.OperationalError:
             pass
+        # Миграция: время последней свечи анализа — для дедупликации циклов бота
+        try:
+            conn.execute("ALTER TABLE signals ADD COLUMN last_candle_time TEXT")
+        except sqlite3.OperationalError:
+            pass
 
 
 def get_all_signals():
@@ -453,6 +463,19 @@ def get_all_signals():
         cursor = conn.cursor()
         cursor.execute("SELECT id, timestamp, model, direction, entry, stop, take, cost, outcome FROM signals ORDER BY id DESC")
         return [dict(row) for row in cursor.fetchall()]
+
+
+def get_last_analyzed_candle_time():
+    """Возвращает время последней проанализированной свечи из БД (для дедупликации циклов бота)."""
+    init_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT last_candle_time FROM signals "
+            "WHERE last_candle_time IS NOT NULL ORDER BY id DESC LIMIT 1"
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
 
 
 def update_signal_outcome(signal_id, outcome):
@@ -485,6 +508,63 @@ def get_journal_stats():
             "total_closed": total_closed,
             "winrate": winrate
         }
+
+
+def _evaluate_signal_outcome(sig, candles):
+    """Определяет исход сигнала по свечам, вышедшим после его свечи анализа.
+
+    Сделка считается открытой только после касания уровня входа.
+    Если в одной свече задеты и TP, и SL — фиксируем SL (консервативно).
+    """
+    direction = sig["direction"]
+    entry = float(sig["entry"])
+    stop = float(sig["stop"])
+    take = float(sig["take"]) if sig["take"] is not None else None
+
+    started = False
+    for c in candles:
+        # Время свечей и last_candle_time в одном строковом формате — лексикографическое сравнение корректно
+        if c["time"] <= sig["last_candle_time"]:
+            continue
+        high, low = c["high"], c["low"]
+        if not started:
+            if not (low <= entry <= high):
+                continue
+            started = True
+        if direction == "long":
+            hit_sl = low <= stop
+            hit_tp = take is not None and high >= take
+        else:
+            hit_sl = high >= stop
+            hit_tp = take is not None and low <= take
+        if hit_sl:
+            return "hit_sl"
+        if hit_tp:
+            return "hit_tp"
+    return None
+
+
+def check_pending_outcomes(candles):
+    """Авто-трекинг: обновляет исходы pending-сигналов по касанию TP/SL новыми свечами."""
+    if not candles:
+        return 0
+    init_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, direction, entry, stop, take, last_candle_time FROM signals
+            WHERE outcome = 'pending' AND direction IN ('long', 'short')
+              AND entry IS NOT NULL AND stop IS NOT NULL AND last_candle_time IS NOT NULL
+        ''')
+        pending = [dict(row) for row in cursor.fetchall()]
+        updated = 0
+        for sig in pending:
+            outcome = _evaluate_signal_outcome(sig, candles)
+            if outcome:
+                conn.execute("UPDATE signals SET outcome = ? WHERE id = ?", (outcome, sig["id"]))
+                updated += 1
+    return updated
 
 
 def estimate_cost(model, prompt_tokens, completion_tokens, cached_tokens=0):
@@ -602,11 +682,12 @@ def log_signal(model, candles, usage, raw_reply, signal):
         entry = signal.get("entry") if signal else None
         stop = signal.get("stop") if signal else None
         take = signal.get("take") if signal else None
-        
+        last_candle_time = candles[-1].get("time") if candles else None
+
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute('''
-                INSERT INTO signals (candles_hash, model, prompt_tokens, completion_tokens, cost, raw_reply, direction, entry, stop, take)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (candles_hash, model, prompt_tokens, completion_tokens, cost, raw_reply, direction, entry, stop, take))
+                INSERT INTO signals (candles_hash, model, prompt_tokens, completion_tokens, cost, raw_reply, direction, entry, stop, take, last_candle_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (candles_hash, model, prompt_tokens, completion_tokens, cost, raw_reply, direction, entry, stop, take, last_candle_time))
     except Exception as e:
         print(f"Ошибка записи в БД: {e}")

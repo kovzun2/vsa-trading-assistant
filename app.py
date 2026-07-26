@@ -6,10 +6,15 @@ import pandas as pd
 
 import streamlit as st
 from dotenv import load_dotenv
+from streamlit_autorefresh import st_autorefresh
 
 import importlib
 import core
-importlib.reload(core)
+
+# Горячая перезагрузка ядра только для разработки (сбрасывает кэш книг при каждом rerun).
+# Включать через DEV_RELOAD=1 в окружении или .env
+if os.getenv("DEV_RELOAD"):
+    importlib.reload(core)
 
 load_dotenv()
 
@@ -71,12 +76,16 @@ def run_analysis_step(candles, basis, spot_symbol, deposit, risk, model, api_key
 with st.sidebar:
     st.header("⚙️ Настройки")
     api_key = st.text_input("OpenRouter API Key", value=os.getenv("OPENROUTER_API_KEY", ""), type="password")
-    model = st.selectbox("LLM Модель", [
+    model_options = [
         "z-ai/glm-5.2",
         "xiaomi/mimo-v2.5",
         "anthropic/claude-3.5-sonnet",
         "google/gemini-1.5-pro",
-    ])
+    ]
+    env_model = os.getenv("MODEL", core.DEFAULT_MODEL)
+    if env_model not in model_options:
+        model_options.insert(0, env_model)
+    model = st.selectbox("LLM Модель", model_options, index=model_options.index(env_model))
 
     st.divider()
     st.subheader("Торговля & MT5")
@@ -141,6 +150,8 @@ with tab1:
         st.session_state.monitoring_active = is_monitoring
 
         if is_monitoring:
+            # Авто-перезапуск скрипта каждые 60 сек — без кликов пользователя
+            st_autorefresh(interval=60_000, key="monitoring_refresh")
             st.info("🟢 **Мониторинг активен:** Бот следит за закрытием каждой 15м свечи, проверяет прошлые гипотезы и готовит новые сценарии.")
             
             if not api_key:
@@ -236,7 +247,10 @@ with tab1:
 
 with tab2:
     st.subheader("📊 Торговый журнал & Статистика сигналов")
-    
+
+    # Авто-трекинг: проверка касания TP/SL по известным свечам для pending-сигналов
+    core.check_pending_outcomes(st.session_state.get("candles"))
+
     j_stats = core.get_journal_stats()
     
     m1, m2, m3, m4, m5 = st.columns(5)

@@ -43,11 +43,22 @@ def analyze_market():
         return
 
     last_candle = candles[-1]
-    
+
     if is_stale:
         logger.info(f"Данные устарели (последняя свеча {last_candle['time']}). Рынок закрыт, анализ пропущен.")
         return
-        
+
+    # Авто-трекинг исходов ранее выданных сигналов по свежим свечам
+    updated = core.check_pending_outcomes(candles)
+    if updated:
+        logger.info(f"Авто-трекинг: обновлено исходов сигналов: {updated}")
+
+    # Дедупликация: не анализируем одну и ту же свечу повторно
+    last_analyzed = core.get_last_analyzed_candle_time()
+    if last_analyzed is not None and last_candle['time'] == last_analyzed:
+        logger.info(f"Свеча {last_candle['time']} уже проанализирована ранее. Пропуск цикла.")
+        return
+
     logger.info(f"Анализируется свеча: {last_candle['time']} | Close: {last_candle['close']} | Vol: {last_candle['volume']}")
 
     system_blocks = core.get_system_prompt_blocks(SPOT_SYMBOL, DEPOSIT, RISK_PERCENT, BOOKS_CONTEXT)
@@ -79,14 +90,14 @@ def run_loop():
     logger.info("Бот переходит в режим ожидания. Проверки в 00, 15, 30, 45 минут часа.")
     while True:
         now = datetime.now()
-        # Find next 15-minute slot + 5 seconds
+        # Следующий 15-минутный слот + 30 секунд (данные Yahoo успевают обновиться)
         minutes_to_next_slot = 15 - (now.minute % 15)
         next_run = now + timedelta(minutes=minutes_to_next_slot)
-        next_run = next_run.replace(second=5, microsecond=0)
-        
+        next_run = next_run.replace(second=30, microsecond=0)
+
         sleep_seconds = (next_run - now).total_seconds()
         if sleep_seconds <= 0:
-            sleep_seconds = 15 * 60  # fallback if already past 5s
+            sleep_seconds = 15 * 60  # fallback if already past 30s
             
         logger.info(f"Сон до следующего запуска: {sleep_seconds:.1f} сек ({next_run.strftime('%H:%M:%S')})")
         time.sleep(sleep_seconds)
